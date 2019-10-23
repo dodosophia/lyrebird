@@ -257,6 +257,8 @@ class DataManager:
             'super_id': None
         }
         # New group added in the head of child list
+        if 'children' not in parent_node:
+            parent_node['children'] = []
         parent_node['children'].insert(0, new_group)
         # Register ID
         self.id_map[group_id] = new_group
@@ -359,32 +361,11 @@ class DataManager:
 
     def _save_prop(self):
         self._sort_children_by_name()
+        prop_str = PropWriter().parse(self.root)
         # Save prop
         prop_file = self.root_path / PROP_FILE_NAME
         with codecs.open(prop_file, 'w') as f:
-            prop_str = json.dumps(self.root, ensure_ascii=False)
-            formated_str = self._prop_json_str_format(prop_str)
-            f.write(formated_str)
-
-    def _prop_json_str_format(self, jsonstr):
-        # Add new line for every node
-        jsonstr_with_newline = jsonstr.replace('[{', '[\n{').replace('}]', '}\n]').replace('},', '},\n')
-        # Add indent
-        lines = jsonstr_with_newline.splitlines()
-        newlines = []
-        _indent_tag = '  '
-        _indent_count = 0
-        for line in lines:
-            line = line.strip()
-            if line[-1] == '[':
-                newlines.append(_indent_tag*_indent_count + line)
-                _indent_count += 1
-            elif line[0] == ']':
-                _indent_count -= 1
-                newlines.append(_indent_tag * _indent_count + line)
-            else:
-                newlines.append(_indent_tag * _indent_count + line)
-        return '\n'.join(newlines)
+            f.write(prop_str)
 
     def _sort_children_by_name(self):
         for node_id in self.id_map:
@@ -450,13 +431,38 @@ class DataManager:
         return conflict_rules
 
     def _get_abs_parent_path(self, node, path=''):
-        if 'parent_id' not in node:
-            return path
-        parent_node = self.id_map.get(node['parent_id'])
-        if not parent_node:
+        parent_node = self._get_node_parent(node)
+        if parent_node is None:
             return path
         current_path = '/' + node['name'] + path
         return self._get_abs_parent_path(parent_node, path=current_path)
+
+    def _get_abs_parent_obj(self, node, parent_obj=None):
+        if parent_obj is None:
+            parent_obj = []
+        if 'id' not in node:
+            return parent_obj
+        node_info = self.id_map.get(node['id'])
+        if not node_info:
+            return parent_obj
+        parent_obj.insert(0, {
+            'id': node_info['id'],
+            'name': node_info['name'],
+            'type': node_info['type'],
+            'parent_id': node_info['parent_id']
+        })
+        parent_node = self._get_node_parent(node)
+        if parent_node is None:
+            return parent_obj
+        return self._get_abs_parent_obj(parent_node, parent_obj=parent_obj)
+
+    def _get_node_parent(self, node):
+        if 'parent_id' not in node:
+            return None
+        parent_node = self.id_map.get(node['parent_id'])
+        if not parent_node:
+            return None
+        return parent_node
 
     # -----
     # Record API
@@ -541,3 +547,73 @@ class IDNotFound(Exception):
 
 class NoneClipbord(Exception):
     pass
+
+
+class DumpPropError(Exception):
+    pass
+
+
+class PropWriter:
+
+    def __init__(self):
+        self.indent = 0
+        self.parsers = {
+            'dict': self.dict_parser,
+            'list': self.list_parser,
+            'int': self.int_parser,
+            'str': self.str_parser,
+            'NoneType': self.none_parser
+        }
+
+    def parse(self, prop):
+        prop_type = type(prop)
+        parser = self.parsers.get(prop_type.__name__)
+        if not parser:
+            raise DumpPropError(f'Not support type {prop_type}')
+        return parser(prop)
+
+    def dict_parser(self, val):
+        dict_str = '{'
+        children = None
+        for k, v in val.items():
+            if k == 'children':
+                children = v
+                continue
+            dict_str += f'"{k}":{self.parse(v)},'
+        if children:
+            dict_str += self.children_parser(children)
+        if dict_str.endswith(','):
+            dict_str = dict_str[:-1]
+        dict_str += '}'
+        return dict_str
+
+    def list_parser(self, val):
+        list_str = '['
+        for item in val:
+            item_str = self.parse(item)
+            list_str += item_str + ','
+        if list_str.endswith(','):
+            list_str = list_str[:-1]
+        list_str += ']'
+        return list_str
+
+    def int_parser(self, val):
+        return f'{val}'
+
+    def str_parser(self, val):
+        return json.dumps(val)
+
+    def none_parser(self, val):
+        return "null"
+
+    def children_parser(self, val):
+        self.indent += 1
+        children_str = '"children":['
+        for child in val:
+            child_str = self.parse(child)
+            children_str += '\n' + '  '*self.indent + child_str + ','
+        if children_str.endswith(','):
+            children_str = children_str[:-1] + '\n' + '  '*(self.indent-1)
+        children_str += ']'
+        self.indent -= 1
+        return children_str
